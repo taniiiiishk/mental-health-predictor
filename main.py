@@ -1,15 +1,51 @@
+
+from pathlib import Path
 from typing import Any, Dict
 
 import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+
+BASE_DIR = Path(__file__).parent
 
 app = FastAPI(title="Mental Health Treatment Predictor")
 
 # Load the model and column names saved from the notebook
-model = joblib.load("model.pkl")
-columns = joblib.load("columns.pkl")
+model = joblib.load(BASE_DIR / "model.pkl")
+columns = joblib.load(BASE_DIR / "columns.pkl")
+
+# If a RandomizedSearchCV object was saved, use the pipeline inside it
+if hasattr(model, "best_estimator_"):
+    model = model.best_estimator_
+
+
+def build_schema():
+    """Reads the fitted pipeline and works out each input field automatically."""
+    fields = {}
+    preprocessor = model.named_steps["preprocessor"]
+    for name, pipe, cols in preprocessor.transformers_:
+        if name == "remainder":
+            continue
+        if name == "categorical":
+            cats = pipe.named_steps["encode"].categories_
+            for col, options in zip(cols, cats):
+                fields[col] = {
+                    "type": "categorical",
+                    "options": [str(o) for o in options],
+                }
+        else:
+            for col in cols:
+                fields[col] = {"type": "number"}
+    # keep the same order as the training columns
+    return [{"name": c, **fields.get(c, {"type": "number"})} for c in columns]
+
+
+
+schema = build_schema()
 
 
 class PredictRequest(BaseModel):
@@ -27,11 +63,26 @@ def features():
     return {"columns": columns}
 
 
+@app.get("/schema")
+def get_schema():
+    """Field types and dropdown options, used by the UI."""
+    return {"fields": schema}
+
+
 @app.post("/predict")
 def predict(request: PredictRequest):
-    # Any missing feature becomes NaN (the pipeline imputes it)
-    row = {col: request.data.get(col) for col in columns}
+    # Blank / missing features become NaN (the pipeline imputes them)
+    row = {}
+    for col in columns:
+        value = request.data.get(col)
+        row[col] = None if value in ("", None) else value
     df = pd.DataFrame([row], columns=columns)
+
+    # make numeric columns numeric
+    for field in schema:
+        if field["type"] == "number":
+            df[field["name"]] = pd.to_numeric(df[field["name"]], errors="coerce")
+
 
     try:
         pred = int(model.predict(df)[0])
@@ -42,4 +93,6 @@ def predict(request: PredictRequest):
     return {
         "treatment": "Yes" if pred == 1 else "No",
         "probability_yes": round(proba, 4),
+
+
     }

@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mental Health Predictor</title>
+<style>
+  :root {
+    --bg: #f4f6fb; --card: #ffffff; --text: #1d2433; --muted: #6b7385;
+    --primary: #4f46e5; --primary-dark: #4338ca; --border: #dfe3ee;
+    --yes: #e11d48; --no: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1220; --card: #181c2e; --text: #e8eaf3; --muted: #99a1b8; --border: #2a2f47; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); padding: 32px 16px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  h1 { margin: 0 0 6px; font-size: 28px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+    padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.04);
+  }
+  form { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  @media (max-width: 600px) { form { grid-template-columns: 1fr; } }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  input, select {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 15px;
+  }
+  input:focus, select:focus { outline: 2px solid var(--primary); border-color: transparent; }
+  .actions { grid-column: 1 / -1; display: flex; gap: 12px; margin-top: 8px; }
+  button {
+    padding: 12px 22px; border-radius: 10px; border: none; font-size: 15px;
+    font-weight: 600; cursor: pointer;
+  }
+  .primary { background: var(--primary); color: #fff; flex: 1; }
+  .primary:hover { background: var(--primary-dark); }
+  .primary:disabled { opacity: .6; cursor: wait; }
+  .ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  #result { margin-top: 24px; display: none; text-align: center; }
+  .badge { display: inline-block; padding: 8px 18px; border-radius: 999px; font-weight: 700; font-size: 18px; color: #fff; }
+  .badge.yes { background: var(--yes); }
+  .badge.no { background: var(--no); }
+  .bar { height: 12px; border-radius: 999px; background: var(--border); overflow: hidden; margin: 16px auto 6px; max-width: 420px; }
+  .bar > div { height: 100%; background: var(--primary); width: 0; transition: width .5s; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 20px; text-align: center; }
+  .error { color: var(--yes); margin-top: 16px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Mental Health Treatment Predictor</h1>
+  <p class="sub">Fill in the details and the model estimates whether the person is likely to seek treatment.</p>
+
+  <div class="card">
+    <form id="form"></form>
+    <div id="result">
+      <div id="badge" class="badge"></div>
+      <div class="bar"><div id="fill"></div></div>
+      <div id="prob" class="sub"></div>
+    </div>
+    <div id="error" class="error"></div>
+  </div>
+
+  <p class="note">This is a student ML project and not medical advice.</p>
+</div>
+
+<script>
+const form = document.getElementById("form");
+let fields = [];
+
+function pretty(name) {
+  return name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+async function init() {
+  const res = await fetch("/schema");
+  const data = await res.json();
+  fields = data.fields;
+
+  fields.forEach(f => {
+    const box = document.createElement("div");
+    const label = document.createElement("label");
+    label.textContent = pretty(f.name);
+    label.htmlFor = f.name;
+    box.appendChild(label);
+
+    let input;
+    if (f.type === "categorical") {
+      input = document.createElement("select");
+      const blank = document.createElement("option");
+      blank.value = "";
+      blank.textContent = "-- Select --";
+      input.appendChild(blank);
+      f.options.forEach(o => {
+        const opt = document.createElement("option");
+        opt.value = o;
+        opt.textContent = o;
+        input.appendChild(opt);
+      });
+    } else {
+      input = document.createElement("input");
+      input.type = "number";
+      input.step = "any";
+      input.placeholder = "Enter a number";
+    }
+    input.id = f.name;
+    input.name = f.name;
+    box.appendChild(input);
+    form.appendChild(box);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.innerHTML =
+    '<button type="submit" class="primary" id="submit">Predict</button>' +
+    '<button type="button" class="ghost" id="reset">Reset</button>';
+  form.appendChild(actions);
+
+  document.getElementById("reset").onclick = () => {
+    form.reset();
+    document.getElementById("result").style.display = "none";
+    document.getElementById("error").textContent = "";
+  };
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById("submit");
+  const err = document.getElementById("error");
+  err.textContent = "";
+  btn.disabled = true;
+  btn.textContent = "Predicting...";
+
+  const payload = {};
+  fields.forEach(f => {
+    const v = document.getElementById(f.name).value;
+    payload[f.name] = v === "" ? null : (f.type === "number" ? Number(v) : v);
+  });
+
+  try {
+    const res = await fetch("/predict", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: payload })
+    });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.detail || "Prediction failed");
+
+    const yes = out.treatment === "Yes";
+    const badge = document.getElementById("badge");
+    badge.textContent = yes ? "Likely to seek treatment" : "Unlikely to seek treatment";
+    badge.className = "badge " + (yes ? "yes" : "no");
+    const pct = (out.probability_yes * 100).toFixed(1);
+    document.getElementById("fill").style.width = pct + "%";
+    document.getElementById("prob").textContent = "Probability of treatment: " + pct + "%";
+    document.getElementById("result").style.display = "block";
+  } catch (ex) {
+    err.textContent = ex.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Predict";
+  }
+});
+
+init();
+</script>
+</body>
+</html>
